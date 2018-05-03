@@ -1,12 +1,30 @@
 # vim:set ft=dockerfile:
-FROM debian:jessie
+FROM debian:stretch
+
+# add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
+RUN groupadd -r mysql && useradd -r -g mysql mysql
+
+# install "pwgen" for randomizing passwords
+# install "gnupg" for gpg
+# install "dirmngr" for gpg key importing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		pwgen \
+		gnupg \
+		dirmngr \
+	&& rm -rf /var/lib/apt/lists/*
 
 # add gosu for easy step-down from root
 ENV GOSU_VERSION 1.10
 RUN set -ex; \
 	\
+	fetchDeps=' \
+		ca-certificates \
+		wget \
+	'; \
 	apt-get update; \
-	apt-get install -y --no-install-recommends apt-transport-https ca-certificates wget pwgen; \
+	apt-get install -y --no-install-recommends $fetchDeps; \
+	rm -rf /var/lib/apt/lists/*; \
+	\
 	dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
 	wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch"; \
 	wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc"; \
@@ -15,20 +33,34 @@ RUN set -ex; \
 	export GNUPGHOME="$(mktemp -d)"; \
 	gpg --keyserver ha.pool.sks-keyservers.net --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
 	gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
-	chmod +x /usr/local/bin/gosu;
+	rm -r "$GNUPGHOME" /usr/local/bin/gosu.asc; \
+	\
+	chmod +x /usr/local/bin/gosu; \
+# verify that the binary works
+	gosu nobody true; \
+	\
+	apt-get purge -y --auto-remove $fetchDeps
+
+RUN mkdir /docker-entrypoint-initdb.d
 
 ENV GPG_KEYS \
-# Key fingerprint = 177F 4010 FE56 CA33 3630 0305 F165 6F24 C74C D1D8
+# Key fingerprint = 1993 69E5 404B D5FC 7D2F  E43B CBCB 082A 1BB9 43DB
 # MariaDB Package Signing Key <package-signing-key@mariadb.org>
-	C74CD1D8
+	199369E5404BD5FC7D2FE43BCBCB082A1BB943DB \
+# Key fingerprint = 177F 4010 FE56 CA33 3630  0305 F165 6F24 C74C D1D8
+# MariaDB Signing Key <signing-key@mariadb.org>
+	177F4010FE56CA3336300305F1656F24C74CD1D8
 RUN set -ex; \
+	export GNUPGHOME="$(mktemp -d)"; \
 	for key in $GPG_KEYS; do \
 		gpg --keyserver ha.pool.sks-keyservers.net --recv-keys "$key"; \
 	done; \
-	gpg --export $GPG_KEYS > /etc/apt/trusted.gpg.d/mariadb.gpg;
+	gpg --export $GPG_KEYS > /etc/apt/trusted.gpg.d/mariadb.gpg; \
+	rm -r "$GNUPGHOME"; \
+	apt-key list
 
 ENV MARIADB_MAJOR 10.3
-ENV MARIADB_VERSION 1:10.3.6+maria~stretch
+ENV MARIADB_VERSION 10.3.5+maria~stretch
 
 RUN echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian stretch main" > /etc/apt/sources.list.d/mariadb.list \
 	&& { \
@@ -39,29 +71,6 @@ RUN echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian stret
 # add repository pinning to make sure dependencies from this MariaDB repo are preferred over Debian dependencies
 #  libmariadbclient18 : Depends: libmysqlclient18 (= 5.5.42+maria-1~wheezy) but 5.5.43-0+deb7u1 is to be installed
 
-FROM debian:stretch-slim
-
-ENV MARIADB_MAJOR 10.3
-ENV MARIADB_VERSION 1:10.3.6+maria~stretch
-
-RUN mkdir /docker-entrypoint-initdb.d
-
-# add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
-RUN groupadd -r mysql && useradd -r -g mysql mysql
-	
-RUN apt-get update && apt-get install -y --no-install-recommends \
-		apt-transport-https ca-certificates gnupg dirmngr\
-	&& rm -rf /var/lib/apt/lists/*
-
-COPY --from=0 /usr/local/bin/gosu /usr/local/bin
-COPY --from=0 /etc/apt/trusted.gpg.d/mariadb.gpg /etc/apt/trusted.gpg.d/
-COPY --from=0 /etc/apt/sources.list.d /etc/apt/sources.list.d/
-COPY --from=0 /etc/apt/preferences.d /etc/apt/preferences.d/
-
-# verify that the binary works and keys are imported
-RUN gosu nobody true; \
-	apt-key list
-
 # the "/var/lib/mysql" stuff here is because the mysql-server postinst doesn't have an explicit way to disable the mysql_install_db codepath besides having a database already "configured" (ie, stuff in /var/lib/mysql/mysql)
 # also, we set debconf keys to make APT a little quieter
 RUN { \
@@ -71,8 +80,15 @@ RUN { \
 	&& apt-get update \
 	&& apt-get install -y \
 		"mariadb-server=$MARIADB_VERSION" \
-# percona-xtrabackup is installed at the same time so that `mysql-common` is only installed once from just mariadb repos
-		socat \
+		libaio1 libjemalloc1 libssl1.0.2 procps socat mariadb-backup-10.3=10.3.5+maria~stretch \
+	# Ensure xtrabkacup SST continue to work, so we don't break existing setups.
+	&& (test ! -f /usr/bin/mariabackup && true \
+		|| (ln -s mariabackup /usr/bin/xtrabackup \
+		&& echo -e '#!/bin/bash\nmariabackup --innobackupex "${@}"' > /usr/bin/innobackupex \
+		&& chmod +x /usr/bin/innobackupex \
+		&& ln -s mbstream /usr/bin/xbstream \
+		&& sed 's/XB_REQUIRED_VERSION=.*/XB_REQUIRED_VERSION=""/' -i /usr/bin/wsrep_sst_xtrabackup-v2) \
+	) \
 	&& rm -rf /var/lib/apt/lists/* \
 # comment out any "user" entires in the MySQL config ("docker-entrypoint.sh" or "--user" will handle user switching)
 	&& sed -ri 's/^user\s/#&/' /etc/mysql/my.cnf /etc/mysql/conf.d/* \
