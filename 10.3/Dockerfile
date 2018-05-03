@@ -18,9 +18,9 @@ RUN set -ex; \
 	chmod +x /usr/local/bin/gosu;
 
 ENV GPG_KEYS \
-# Key fingerprint = 1993 69E5 404B D5FC 7D2F  E43B CBCB 082A 1BB9 43DB
+# Key fingerprint = 177F 4010 FE56 CA33 3630 0305 F165 6F24 C74C D1D8
 # MariaDB Package Signing Key <package-signing-key@mariadb.org>
-	199369E5404BD5FC7D2FE43BCBCB082A1BB943DB \
+	C74CD1D8 \
 # pub   1024D/CD2EFD2A 2009-12-15
 #       Key fingerprint = 430B DF5C 56E7 C94E 848E  E60C 1C4C BDCD CD2E FD2A
 # uid                  Percona MySQL Development Team <mysql-dev@percona.com>
@@ -38,7 +38,7 @@ RUN set -ex; \
 	gpg --export $GPG_KEYS > /etc/apt/trusted.gpg.d/mariadb.gpg;
 
 # add Percona's repo for xtrabackup (which is useful for Galera)
-RUN echo "deb https://repo.percona.com/apt jessie main" > /etc/apt/sources.list.d/percona.list \
+RUN echo "deb https://repo.percona.com/apt stretch main" > /etc/apt/sources.list.d/percona.list \
 	&& { \
 		echo 'Package: *'; \
 		echo 'Pin: release o=Percona Development Team'; \
@@ -46,9 +46,9 @@ RUN echo "deb https://repo.percona.com/apt jessie main" > /etc/apt/sources.list.
 	} > /etc/apt/preferences.d/percona
 
 ENV MARIADB_MAJOR 10.3
-ENV MARIADB_VERSION 1:10.3.6+maria~jessie
+ENV MARIADB_VERSION 1:10.3.6+maria~stretch
 
-RUN echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian jessie main" > /etc/apt/sources.list.d/mariadb.list \
+RUN echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian stretch main" > /etc/apt/sources.list.d/mariadb.list \
 	&& { \
 		echo 'Package: *'; \
 		echo 'Pin: release o=MariaDB'; \
@@ -57,10 +57,10 @@ RUN echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian jessi
 # add repository pinning to make sure dependencies from this MariaDB repo are preferred over Debian dependencies
 #  libmariadbclient18 : Depends: libmysqlclient18 (= 5.5.42+maria-1~wheezy) but 5.5.43-0+deb7u1 is to be installed
 
-FROM debian:jessie
+FROM debian:stretch-slim
 
 ENV MARIADB_MAJOR 10.3
-ENV MARIADB_VERSION 1:10.3.6+maria~jessie
+ENV MARIADB_VERSION 1:10.3.6+maria~stretch
 
 RUN mkdir /docker-entrypoint-initdb.d
 
