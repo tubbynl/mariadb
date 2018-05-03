@@ -1,5 +1,5 @@
 # vim:set ft=dockerfile:
-FROM debian:stretch
+FROM debian:stretch-slim
 
 # add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
 RUN groupadd -r mysql && useradd -r -g mysql mysql
@@ -8,23 +8,12 @@ RUN groupadd -r mysql && useradd -r -g mysql mysql
 # install "gnupg" for gpg
 # install "dirmngr" for gpg key importing
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		pwgen \
-		gnupg \
-		dirmngr \
+		pwgen gnupg dirmngr ca-certificates wget \
 	&& rm -rf /var/lib/apt/lists/*
 
 # add gosu for easy step-down from root
 ENV GOSU_VERSION 1.10
 RUN set -ex; \
-	\
-	fetchDeps=' \
-		ca-certificates \
-		wget \
-	'; \
-	apt-get update; \
-	apt-get install -y --no-install-recommends $fetchDeps; \
-	rm -rf /var/lib/apt/lists/*; \
-	\
 	dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
 	wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch"; \
 	wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc"; \
@@ -33,15 +22,7 @@ RUN set -ex; \
 	export GNUPGHOME="$(mktemp -d)"; \
 	gpg --keyserver ha.pool.sks-keyservers.net --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
 	gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
-	rm -r "$GNUPGHOME" /usr/local/bin/gosu.asc; \
-	\
-	chmod +x /usr/local/bin/gosu; \
-# verify that the binary works
-	gosu nobody true; \
-	\
-	apt-get purge -y --auto-remove $fetchDeps
-
-RUN mkdir /docker-entrypoint-initdb.d
+	chmod +x /usr/local/bin/gosu;
 
 ENV GPG_KEYS \
 # Key fingerprint = 1993 69E5 404B D5FC 7D2F  E43B CBCB 082A 1BB9 43DB
@@ -51,18 +32,32 @@ ENV GPG_KEYS \
 # MariaDB Signing Key <signing-key@mariadb.org>
 	177F4010FE56CA3336300305F1656F24C74CD1D8
 RUN set -ex; \
-	export GNUPGHOME="$(mktemp -d)"; \
 	for key in $GPG_KEYS; do \
 		gpg --keyserver ha.pool.sks-keyservers.net --recv-keys "$key"; \
 	done; \
-	gpg --export $GPG_KEYS > /etc/apt/trusted.gpg.d/mariadb.gpg; \
-	rm -r "$GNUPGHOME"; \
-	apt-key list
+	gpg --export $GPG_KEYS > /etc/apt/trusted.gpg.d/mariadb.gpg;
+
+FROM debian:stretch-slim
 
 ENV MARIADB_MAJOR 10.3
-ENV MARIADB_VERSION 10.3.5+maria~stretch
+ENV MARIADB_VERSION 1:10.3.6+maria~stretch
 
-RUN echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian stretch main" > /etc/apt/sources.list.d/mariadb.list \
+RUN mkdir /docker-entrypoint-initdb.d
+
+# add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
+RUN groupadd -r mysql && useradd -r -g mysql mysql
+	
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		apt-transport-https ca-certificates gnupg dirmngr\
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=0 /usr/local/bin/gosu /usr/local/bin
+COPY --from=0 /etc/apt/trusted.gpg.d/mariadb.gpg /etc/apt/trusted.gpg.d/
+
+# verify that the binary works and keys are imported
+RUN gosu nobody true \
+	&& apt-key list \
+	&& echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian stretch main" > /etc/apt/sources.list.d/mariadb.list \
 	&& { \
 		echo 'Package: *'; \
 		echo 'Pin: release o=MariaDB'; \
