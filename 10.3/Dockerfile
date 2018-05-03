@@ -1,21 +1,12 @@
 # vim:set ft=dockerfile:
 FROM debian:jessie
 
-# add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
-RUN groupadd -r mysql && useradd -r -g mysql mysql
-
 # add gosu for easy step-down from root
 ENV GOSU_VERSION 1.10
 RUN set -ex; \
 	\
-	fetchDeps=' \
-		ca-certificates \
-		wget \
-	'; \
 	apt-get update; \
-	apt-get install -y --no-install-recommends $fetchDeps; \
-	rm -rf /var/lib/apt/lists/*; \
-	\
+	apt-get install -y --no-install-recommends apt-transport-https ca-certificates wget pwgen; \
 	dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')"; \
 	wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch"; \
 	wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc"; \
@@ -24,22 +15,7 @@ RUN set -ex; \
 	export GNUPGHOME="$(mktemp -d)"; \
 	gpg --keyserver ha.pool.sks-keyservers.net --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4; \
 	gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu; \
-	rm -r "$GNUPGHOME" /usr/local/bin/gosu.asc; \
-	\
-	chmod +x /usr/local/bin/gosu; \
-# verify that the binary works
-	gosu nobody true; \
-	\
-	apt-get purge -y --auto-remove $fetchDeps
-
-RUN mkdir /docker-entrypoint-initdb.d
-
-# install "pwgen" for randomizing passwords
-# install "apt-transport-https" for Percona's repo (switched to https-only)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-		apt-transport-https ca-certificates \
-		pwgen \
-	&& rm -rf /var/lib/apt/lists/*
+	chmod +x /usr/local/bin/gosu;
 
 ENV GPG_KEYS \
 # Key fingerprint = 1993 69E5 404B D5FC 7D2F  E43B CBCB 082A 1BB9 43DB
@@ -56,13 +32,10 @@ ENV GPG_KEYS \
 # sub   4096R/4CAC6D72 2016-06-30
 	4D1BB29D63D98E422B2113B19334A25F8507EFA5
 RUN set -ex; \
-	export GNUPGHOME="$(mktemp -d)"; \
 	for key in $GPG_KEYS; do \
 		gpg --keyserver ha.pool.sks-keyservers.net --recv-keys "$key"; \
 	done; \
-	gpg --export $GPG_KEYS > /etc/apt/trusted.gpg.d/mariadb.gpg; \
-	rm -r "$GNUPGHOME"; \
-	apt-key list
+	gpg --export $GPG_KEYS > /etc/apt/trusted.gpg.d/mariadb.gpg;
 
 # add Percona's repo for xtrabackup (which is useful for Galera)
 RUN echo "deb https://repo.percona.com/apt jessie main" > /etc/apt/sources.list.d/percona.list \
@@ -83,6 +56,29 @@ RUN echo "deb http://ftp.osuosl.org/pub/mariadb/repo/$MARIADB_MAJOR/debian jessi
 	} > /etc/apt/preferences.d/mariadb
 # add repository pinning to make sure dependencies from this MariaDB repo are preferred over Debian dependencies
 #  libmariadbclient18 : Depends: libmysqlclient18 (= 5.5.42+maria-1~wheezy) but 5.5.43-0+deb7u1 is to be installed
+
+FROM debian:jessie
+
+ENV MARIADB_MAJOR 10.3
+ENV MARIADB_VERSION 1:10.3.6+maria~jessie
+
+RUN mkdir /docker-entrypoint-initdb.d
+
+# add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
+RUN groupadd -r mysql && useradd -r -g mysql mysql
+	
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		apt-transport-https ca-certificates gnupg dirmngr\
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=0 /usr/local/bin/gosu /usr/local/bin
+COPY --from=0 /etc/apt/trusted.gpg.d/mariadb.gpg /etc/apt/trusted.gpg.d/
+COPY --from=0 /etc/apt/sources.list.d /etc/apt/sources.list.d/
+COPY --from=0 /etc/apt/preferences.d /etc/apt/preferences.d/
+
+# verify that the binary works and keys are imported
+RUN gosu nobody true; \
+	apt-key list
 
 # the "/var/lib/mysql" stuff here is because the mysql-server postinst doesn't have an explicit way to disable the mysql_install_db codepath besides having a database already "configured" (ie, stuff in /var/lib/mysql/mysql)
 # also, we set debconf keys to make APT a little quieter
